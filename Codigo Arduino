@@ -1,0 +1,118 @@
+#include <WiFi.h>
+#include <WiFiUdp.h>
+#include <math.h>
+
+// ==========================================
+// CONFIGURACIÓN DE RED
+// ==========================================
+const char* ssid = "wifi";                   // Nombre de tu red[cite: 3]
+const char* password = "123456789"; // <--- REEMPLAZA SOLO ESTA LÍNEA
+const char* pc_ip = "192.168.121.191";       // IP de tu PC[cite: 3]
+const int port_udp = 8888;                   // Puerto UDP de comunicación
+
+#define ROBOT_ID 1
+#define NODOS 6
+#define ALPHA 1.0
+#define BETA 2.0
+
+WiFiUDP udp;
+
+// Matriz de distancias del laberinto (0 = sin conexión directa)
+float distancias[NODOS][NODOS] = {
+  {0, 2, 4, 0, 0, 0},
+  {2, 0, 1, 5, 0, 0},
+  {4, 1, 0, 2, 3, 0},
+  {0, 5, 2, 0, 1, 2},
+  {0, 0, 3, 1, 0, 1},
+  {0, 0, 0, 2, 1, 0}
+};
+
+float feromonas[NODOS][NODOS];
+
+void setup() {
+  Serial.begin(115200);
+  pinMode(2, OUTPUT); // LED integrado para confirmación visual
+
+  WiFi.begin(ssid, password);
+  
+  Serial.print("Conectando a la red ");
+  Serial.print(ssid);
+  
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+  
+  Serial.println("\n ESP32 Conectada con éxito!");
+  Serial.print("📡 Dirección IP de la ESP32: ");
+  Serial.println(WiFi.localIP());
+
+  udp.begin(port_udp);
+
+  // Inicializar nivel de feromonas
+  for (int i = 0; i < NODOS; i++) {
+    for (int j = 0; j < NODOS; j++) {
+      feromonas[i][j] = 1.0;
+    }
+  }
+}
+
+int seleccionarSiguiente(int actual, bool visitados[]) {
+  float prob[NODOS];
+  float suma = 0.0;
+
+  for (int j = 0; j < NODOS; j++) {
+    if (!visitados[j] && distancias[actual][j] > 0) {
+      prob[j] = pow(feromonas[actual][j], ALPHA) * pow(1.0 / distancias[actual][j], BETA);
+      suma += prob[j];
+    } else {
+      prob[j] = 0.0;
+    }
+  }
+
+  if (suma == 0.0) return -1;
+  float r = ((float)rand() / RAND_MAX) * suma;
+  float acum = 0.0;
+
+  for (int j = 0; j < NODOS; j++) {
+    acum += prob[j];
+    if (acum >= r) return j;
+  }
+  return -1;
+}
+
+void loop() {
+  bool visitados[NODOS] = {false};
+  int actual = 0;
+  int meta = 5;
+
+  visitados[actual] = true;
+
+  while (actual != meta) {
+    // 1. Enviar trama de posición por UDP a la PC
+    char msg[32];
+    snprintf(msg, sizeof(msg), "POS,%d,%d", ROBOT_ID, actual);
+    
+    udp.beginPacket(pc_ip, port_udp);
+    udp.write((uint8_t*)msg, strlen(msg));
+    udp.endPacket();
+
+    Serial.print(" Telemetría enviada -> Robot 1 en Nodo ");
+    Serial.println(actual);
+
+    // 2. Parpadeo del LED azul (GPIO 2) al transmitir
+    digitalWrite(2, HIGH);
+    delay(100);
+    digitalWrite(2, LOW);
+
+    delay(700); // Pausa entre desplazamientos para PyBullet
+
+    // 3. Seleccionar siguiente nodo según algoritmo ACO
+    int sig = seleccionarSiguiente(actual, visitados);
+    if (sig == -1) break;
+    actual = sig;
+    visitados[actual] = true;
+  }
+
+  delay(2000); // Pausa al llegar a la meta antes de reiniciar el recorrido
+}
